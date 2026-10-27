@@ -1,11 +1,16 @@
 
-"""Experimento de Monte Carlo para avaliar a propagação de erros.
+"""Monte Carlo para propagacao de erros em grafos aritmeticos.
 
-Os casos e suas expressões são definidos em casos.py.
-Este arquivo executa as simulações e salva os resultados em CSV.
+Gera:
+- monte_carlo_amostras.csv: uma linha por simulacao;
+- monte_carlo_resumo.csv: metricas agregadas por caso e delta.
+
+As perturbacoes sao aditivas e uniformes em [-delta, delta].
 """
 
 import csv
+import json
+import math
 import random
 import statistics
 from pathlib import Path
@@ -14,13 +19,33 @@ from motor import Motor
 from casos import CASOS
 
 
-def executar_experimento(
-    n_simulacoes=1000,
-    deltas=(0.01, 0.1, 0.5),
-    semente=20261027,
-):
-    """Executa o Monte Carlo para todos os casos cadastrados."""
+N_SIMULACOES = 1000
+DELTAS = (0.01, 0.1, 0.5)
+SEMENTE = 20261027
+TOLERANCIA_COBERTURA = 1e-12
 
+# Salva os resultados junto a este arquivo.
+PASTA_SAIDA = Path(__file__).resolve().parent
+
+
+def quantil_nearest_rank(valores, p):
+    """Calcula quantil pelo metodo nearest-rank."""
+    if not valores:
+        raise ValueError("A lista de valores nao pode estar vazia.")
+
+    if not 0 <= p <= 1:
+        raise ValueError("p precisa estar entre 0 e 1.")
+
+    ordenados = sorted(valores)
+    indice = max(0, math.ceil(p * len(ordenados)) - 1)
+    return ordenados[indice]
+
+
+def executar_experimento(
+    n_simulacoes=N_SIMULACOES,
+    deltas=DELTAS,
+    semente=SEMENTE,
+):
     if n_simulacoes <= 0:
         raise ValueError("n_simulacoes precisa ser maior que zero.")
 
@@ -28,32 +53,31 @@ def executar_experimento(
         raise ValueError("Informe pelo menos um valor de delta.")
 
     if any(delta < 0 for delta in deltas):
-        raise ValueError("Os valores de delta não podem ser negativos.")
+        raise ValueError("Os valores de delta nao podem ser negativos.")
 
     gerador = random.Random(semente)
-    resultados = []
+    amostras = []
+    resumos = []
 
     for construtor in CASOS:
         caso_base = construtor()
         nome_caso = caso_base["nome"]
-        entradas = caso_base["entradas_mc"]
+        nomes_perturbados = tuple(caso_base["entradas_mc"].keys())
 
         for delta in deltas:
             erros_reais = []
             erros_lineares = []
-            diferencas = []
+            diferencas_magnitude = []
             coberturas = []
 
-            for _ in range(n_simulacoes):
-                # Cria um caso novo para cada simulação.
+            for numero_amostra in range(1, n_simulacoes + 1):
+                # Cria um grafo novo para cada simulacao.
                 caso = construtor()
                 motor = Motor(caso["nos"])
 
-                # Perturba cada entrada em até +/- delta
-                # em relação ao seu valor nominal.
                 perturbacoes = {
                     nome: gerador.uniform(-delta, delta)
-                    for nome in entradas
+                    for nome in nomes_perturbados
                 }
 
                 analise = motor.analisar_perturbacoes(
@@ -61,98 +85,148 @@ def executar_experimento(
                     perturbacoes,
                 )
 
-                erro_real = analise["erro_absoluto_real"]
-                erro_linear = analise["erro_absoluto_linear"]
-                soma_modulos = analise["soma_modulos_contribuicoes"]
+                # Nomes correspondentes ao retorno real do motor.py.
+                variacao_real = float(analise["variacao_real"])
+                variacao_linear = float(
+                    analise["variacao_linear_estimada"]
+                )
+
+                erro_real = float(analise["erro_absoluto_real"])
+                erro_linear = float(analise["erro_absoluto_linear"])
+
+                soma_modulos = float(
+                    analise["soma_modulos_contribuicoes"]
+                )
+
+                residuo = variacao_real - variacao_linear
+
+                # Diferenca entre os modulos das duas variacoes.
+                diferenca_magnitude = abs(erro_real - erro_linear)
+
+                # Verifica se a soma dos modulos das contribuicoes
+                # lineares cobre o modulo da variacao real observada.
+                coberto = (
+                    soma_modulos + TOLERANCIA_COBERTURA >= erro_real
+                )
 
                 erros_reais.append(erro_real)
                 erros_lineares.append(erro_linear)
-                diferencas.append(
-                    analise["modulo_diferenca_real_linear"]
-                )
-                coberturas.append(soma_modulos >= erro_real)
+                diferencas_magnitude.append(diferenca_magnitude)
+                coberturas.append(coberto)
 
-            erros_ordenados = sorted(erros_reais)
+                amostras.append({
+                    "caso": nome_caso,
+                    "delta": delta,
+                    "semente": semente,
+                    "n_simulacoes_planejadas": n_simulacoes,
+                    "amostra": numero_amostra,
+                    "nos_perturbados": json.dumps(
+                        list(nomes_perturbados),
+                        ensure_ascii=False,
+                    ),
+                    "perturbacoes": json.dumps(
+                        perturbacoes,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "variacao_real_assinada": variacao_real,
+                    "variacao_linear_assinada": variacao_linear,
+                    "erro_absoluto_real": erro_real,
+                    "erro_absoluto_linear": erro_linear,
+                    "diferenca_magnitude_real_linear": (
+                        diferenca_magnitude
+                    ),
+                    "residuo_assinado_real_menos_linear": residuo,
+                    "soma_modulos_contribuicoes": soma_modulos,
+                    "soma_modulos_cobre_erro_real": int(coberto),
+                })
 
-            indice_p90 = min(
-                int(0.90 * len(erros_ordenados)),
-                len(erros_ordenados) - 1,
-            )
-            indice_p99 = min(
-                int(0.99 * len(erros_ordenados)),
-                len(erros_ordenados) - 1,
-            )
-
-            resultados.append({
+            resumos.append({
                 "caso": nome_caso,
                 "delta": delta,
-                "simulacoes": n_simulacoes,
+                "n_simulacoes": n_simulacoes,
+                "semente": semente,
                 "erro_real_medio": statistics.mean(erros_reais),
-                "erro_real_mediano": statistics.median(erros_reais),
+                "erro_real_p50": quantil_nearest_rank(
+                    erros_reais, 0.50
+                ),
+                "erro_real_p90": quantil_nearest_rank(
+                    erros_reais, 0.90
+                ),
+                "erro_real_p99": quantil_nearest_rank(
+                    erros_reais, 0.99
+                ),
                 "erro_real_maximo": max(erros_reais),
-                "erro_real_p90": erros_ordenados[indice_p90],
-                "erro_real_p99": erros_ordenados[indice_p99],
                 "erro_linear_medio": statistics.mean(erros_lineares),
-                "diferenca_media_real_linear": statistics.mean(diferencas),
+                "diferenca_magnitude_media_real_linear": (
+                    statistics.mean(diferencas_magnitude)
+                ),
                 "cobertura_soma_modulos_percentual": (
-                    100.0 * sum(coberturas) / n_simulacoes
+                    100.0 * sum(coberturas) / len(coberturas)
                 ),
             })
 
-    return resultados
+    return amostras, resumos
 
 
-def salvar_csv(resultados, caminho="resultados_monte_carlo.csv"):
-    """Salva os resultados agregados em um arquivo CSV."""
-
-    if not resultados:
-        raise ValueError("Não há resultados para salvar.")
+def salvar_csv(linhas, caminho):
+    """Salva os resultados em CSV."""
+    if not linhas:
+        raise ValueError(f"Nao ha dados para salvar: {caminho}")
 
     caminho = Path(caminho)
+    caminho.parent.mkdir(parents=True, exist_ok=True)
 
-    with caminho.open("w", newline="", encoding="utf-8-sig") as arquivo:
+    with caminho.open(
+        "w",
+        newline="",
+        encoding="utf-8-sig",
+    ) as arquivo:
         escritor = csv.DictWriter(
             arquivo,
-            fieldnames=list(resultados[0].keys()),
+            fieldnames=list(linhas[0].keys()),
         )
         escritor.writeheader()
-        escritor.writerows(resultados)
+        escritor.writerows(linhas)
 
     return caminho
 
 
 def main():
-    n_simulacoes = 1000
-    deltas = (0.01, 0.1, 0.5)
+    print("Iniciando experimento de Monte Carlo...")
 
-    resultados = executar_experimento(
-        n_simulacoes=n_simulacoes,
-        deltas=deltas,
-        semente=20261027,
+    amostras, resumos = executar_experimento()
+
+    arquivo_amostras = salvar_csv(
+        amostras,
+        PASTA_SAIDA / "monte_carlo_amostras.csv",
     )
 
-    arquivo = salvar_csv(resultados)
+    arquivo_resumo = salvar_csv(
+        resumos,
+        PASTA_SAIDA / "monte_carlo_resumo.csv",
+    )
 
-    print(f"Simulações por caso e delta: {n_simulacoes}")
-    print(f"Casos analisados: {len(CASOS)}")
-    print(f"Combinações caso/delta: {len(resultados)}")
-    print(f"Total de simulações: {len(CASOS) * len(deltas) * n_simulacoes}")
-    print(f"Resultados salvos em: {arquivo.resolve()}")
+    print()
+    print("Experimento concluido.")
+    print(f"Casos: {len(CASOS)}")
+    print(f"Deltas: {DELTAS}")
+    print(f"Simulacoes por caso/delta: {N_SIMULACOES}")
+    print(f"Total de amostras: {len(amostras)}")
+    print(f"Semente aleatoria: {SEMENTE}")
+    print(f"Amostras individuais: {arquivo_amostras}")
+    print(f"Resumo agregado: {arquivo_resumo}")
+    print()
 
-    for linha in resultados:
-        print(f"\nCaso: {linha['caso']} | delta={linha['delta']}")
-        print(f"  Erro médio: {linha['erro_real_medio']:.6g}")
-        print(f"  Erro mediano: {linha['erro_real_mediano']:.6g}")
-        print(f"  Erro máximo: {linha['erro_real_maximo']:.6g}")
-        print(f"  P90: {linha['erro_real_p90']:.6g}")
-        print(f"  P99: {linha['erro_real_p99']:.6g}")
-        print(f"  Erro linear médio: {linha['erro_linear_medio']:.6g}")
+    for linha in resumos:
         print(
-            f"  Diferença média real-linear: "
-            f"{linha['diferenca_media_real_linear']:.6g}"
-        )
-        print(
-            f"  Cobertura da soma dos módulos: "
+            f"{linha['caso']} | "
+            f"delta={linha['delta']} | "
+            f"media={linha['erro_real_medio']:.6g} | "
+            f"P50={linha['erro_real_p50']:.6g} | "
+            f"P90={linha['erro_real_p90']:.6g} | "
+            f"P99={linha['erro_real_p99']:.6g} | "
+            f"cobertura="
             f"{linha['cobertura_soma_modulos_percentual']:.1f}%"
         )
 
