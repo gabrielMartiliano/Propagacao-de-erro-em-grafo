@@ -74,8 +74,8 @@ def executar_experimento(
 
             erros_ordenados = sorted(erros_reais)
 
-            indice_p95 = min(
-                int(0.95 * len(erros_ordenados)),
+            indice_p90 = min(
+                int(0.90 * len(erros_ordenados)),
                 len(erros_ordenados) - 1,
             )
             indice_p99 = min(
@@ -90,7 +90,7 @@ def executar_experimento(
                 "erro_real_medio": statistics.mean(erros_reais),
                 "erro_real_mediano": statistics.median(erros_reais),
                 "erro_real_maximo": max(erros_reais),
-                "erro_real_p95": erros_ordenados[indice_p95],
+                "erro_real_p90": erros_ordenados[indice_p90],
                 "erro_real_p99": erros_ordenados[indice_p99],
                 "erro_linear_medio": statistics.mean(erros_lineares),
                 "diferenca_media_real_linear": statistics.mean(diferencas),
@@ -144,7 +144,7 @@ def main():
         print(f"  Erro médio: {linha['erro_real_medio']:.6g}")
         print(f"  Erro mediano: {linha['erro_real_mediano']:.6g}")
         print(f"  Erro máximo: {linha['erro_real_maximo']:.6g}")
-        print(f"  P95: {linha['erro_real_p95']:.6g}")
+        print(f"  P90: {linha['erro_real_p90']:.6g}")
         print(f"  P99: {linha['erro_real_p99']:.6g}")
         print(f"  Erro linear médio: {linha['erro_linear_medio']:.6g}")
         print(
