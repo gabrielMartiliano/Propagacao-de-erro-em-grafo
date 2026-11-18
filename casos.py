@@ -1,7 +1,6 @@
+"""Casos de referencia para o projeto de propagacao de erros.
 
-"""Casos de referência para o projeto de propagação de erros.
-
-Os quatro casos são definidos com valores esperados calculados à mão.
+Os quatro casos possuem valores esperados calculados manualmente.
 O main.py e o monteCarlos.py reutilizam os casos deste arquivo.
 """
 
@@ -9,7 +8,7 @@ from motor import No
 
 
 def caso_1():
-    """Perturbação em nó intermediário: z = (a + b) * c."""
+    """Perturbacao em no intermediario: z = (a + b) * c."""
 
     a = No("a", "INPUT", 2.0)
     b = No("b", "INPUT", 3.0)
@@ -22,17 +21,26 @@ def caso_1():
         "nome": "Caso 1 - Perturbacao em no intermediario",
         "nos": [a, b, c, soma, saida],
         "saida": saida,
+
+        # Mantido para compatibilidade com outros trechos do projeto.
         "entradas_mc": {"a": 2.0, "b": 3.0, "c": 10.0},
+
+        # O Monte Carlo deve perturbar exatamente o mesmo no do teste
+        # deterministico: o no intermediario "soma".
         "perturbacoes_teste": {"soma": 0.5},
+
         "saida_esperada": 50.0,
         "saida_perturbada_esperada": 55.0,
         "sensibilidade_esperada": {"soma": 10.0},
-        "descricao": "Verifica a propagacao de perturbacao em no intermediario.",
+        "descricao": (
+            "Verifica a propagacao de perturbacao em um no intermediario, "
+            "mantendo as entradas a, b e c fixas."
+        ),
     }
 
 
 def caso_2():
-    """Caso nao linear: z = a * a, com delta = 0.5."""
+    """Caso nao linear: z = a * a, com delta deterministico = 0.5."""
 
     a = No("a", "INPUT", 2.0)
     saida = No("saida", "MUL", entradas=[a, a])
@@ -41,7 +49,7 @@ def caso_2():
 
     # z = 2^2 = 4
     # z_perturbado = (2 + 0.5)^2 = 6.25
-    # Erro real assinado = 6.25 - 4 = 2.25
+    # Erro real assinado = 2.25
     # Aproximacao de primeira ordem = 2*a*delta = 2
     # Diferenca = delta^2 = 0.25
 
@@ -82,7 +90,7 @@ def caso_3():
     # Erro real assinado = 11.25
     # dz/da = b(a+b) + ab = 2ab + b^2 = 21
     # Estimativa linear = 21 * 0.5 = 10.5
-    # Diferenca = 11.25 - 10.5 = 0.75
+    # Diferenca = 0.75
 
     return {
         "nome": "Caso 3 - Caminhos convergentes",

@@ -1,4 +1,3 @@
-
 """Monte Carlo para propagacao de erros em grafos aritmeticos.
 
 Gera:
@@ -6,6 +5,10 @@ Gera:
 - monte_carlo_resumo.csv: metricas agregadas por caso e delta.
 
 As perturbacoes sao aditivas e uniformes em [-delta, delta].
+
+IMPORTANTE:
+O Monte Carlo utiliza as chaves de "perturbacoes_teste" de cada caso.
+Assim, perturba os mesmos nos utilizados nos testes determinísticos.
 """
 
 import csv
@@ -24,7 +27,6 @@ DELTAS = (0.01, 0.1, 0.5)
 SEMENTE = 20261027
 TOLERANCIA_COBERTURA = 1e-12
 
-# Salva os resultados junto a este arquivo.
 PASTA_SAIDA = Path(__file__).resolve().parent
 
 
@@ -32,13 +34,35 @@ def quantil_nearest_rank(valores, p):
     """Calcula quantil pelo metodo nearest-rank."""
     if not valores:
         raise ValueError("A lista de valores nao pode estar vazia.")
-
     if not 0 <= p <= 1:
         raise ValueError("p precisa estar entre 0 e 1.")
 
     ordenados = sorted(valores)
     indice = max(0, math.ceil(p * len(ordenados)) - 1)
     return ordenados[indice]
+
+
+def validar_caso_para_monte_carlo(caso):
+    """Valida se os nos definidos para perturbacao existem no grafo."""
+    perturbacoes_teste = caso.get("perturbacoes_teste")
+
+    if not isinstance(perturbacoes_teste, dict) or not perturbacoes_teste:
+        raise ValueError(
+            f"O caso {caso.get('nome', '<sem nome>')!r} precisa definir "
+            "'perturbacoes_teste' como um dicionario nao vazio."
+        )
+
+    nomes_grafo = {no.nome for no in caso["nos"]}
+    nomes_perturbados = set(perturbacoes_teste)
+
+    desconhecidos = nomes_perturbados - nomes_grafo
+    if desconhecidos:
+        raise ValueError(
+            f"O caso {caso['nome']!r} tenta perturbar nos inexistentes: "
+            + ", ".join(sorted(desconhecidos))
+        )
+
+    return tuple(perturbacoes_teste.keys())
 
 
 def executar_experimento(
@@ -52,8 +76,8 @@ def executar_experimento(
     if not deltas:
         raise ValueError("Informe pelo menos um valor de delta.")
 
-    if any(delta < 0 for delta in deltas):
-        raise ValueError("Os valores de delta nao podem ser negativos.")
+    if any(not math.isfinite(float(delta)) or delta < 0 for delta in deltas):
+        raise ValueError("Os valores de delta precisam ser finitos e nao negativos.")
 
     gerador = random.Random(semente)
     amostras = []
@@ -62,16 +86,23 @@ def executar_experimento(
     for construtor in CASOS:
         caso_base = construtor()
         nome_caso = caso_base["nome"]
-        nomes_perturbados = tuple(caso_base["entradas_mc"].keys())
+
+        # CORRECAO PRINCIPAL:
+        # usa os mesmos nos do teste deterministico, em vez de perturbar
+        # automaticamente todas as entradas listadas em entradas_mc.
+        nomes_perturbados = validar_caso_para_monte_carlo(caso_base)
 
         for delta in deltas:
+            delta = float(delta)
+
             erros_reais = []
             erros_lineares = []
             diferencas_magnitude = []
+            residuos_assinados = []
             coberturas = []
 
             for numero_amostra in range(1, n_simulacoes + 1):
-                # Cria um grafo novo para cada simulacao.
+                # Grafo novo para evitar carregar resultados de outra amostra.
                 caso = construtor()
                 motor = Motor(caso["nos"])
 
@@ -85,7 +116,6 @@ def executar_experimento(
                     perturbacoes,
                 )
 
-                # Nomes correspondentes ao retorno real do motor.py.
                 variacao_real = float(analise["variacao_real"])
                 variacao_linear = float(
                     analise["variacao_linear_estimada"]
@@ -93,18 +123,14 @@ def executar_experimento(
 
                 erro_real = float(analise["erro_absoluto_real"])
                 erro_linear = float(analise["erro_absoluto_linear"])
-
                 soma_modulos = float(
                     analise["soma_modulos_contribuicoes"]
                 )
 
                 residuo = variacao_real - variacao_linear
-
-                # Diferenca entre os modulos das duas variacoes.
                 diferenca_magnitude = abs(erro_real - erro_linear)
 
-                # Verifica se a soma dos modulos das contribuicoes
-                # lineares cobre o modulo da variacao real observada.
+                # Cobertura empirica da soma dos modulos das contribuicoes.
                 coberto = (
                     soma_modulos + TOLERANCIA_COBERTURA >= erro_real
                 )
@@ -112,6 +138,7 @@ def executar_experimento(
                 erros_reais.append(erro_real)
                 erros_lineares.append(erro_linear)
                 diferencas_magnitude.append(diferenca_magnitude)
+                residuos_assinados.append(residuo)
                 coberturas.append(coberto)
 
                 amostras.append({
@@ -133,9 +160,7 @@ def executar_experimento(
                     "variacao_linear_assinada": variacao_linear,
                     "erro_absoluto_real": erro_real,
                     "erro_absoluto_linear": erro_linear,
-                    "diferenca_magnitude_real_linear": (
-                        diferenca_magnitude
-                    ),
+                    "diferenca_magnitude_real_linear": diferenca_magnitude,
                     "residuo_assinado_real_menos_linear": residuo,
                     "soma_modulos_contribuicoes": soma_modulos,
                     "soma_modulos_cobre_erro_real": int(coberto),
@@ -143,24 +168,23 @@ def executar_experimento(
 
             resumos.append({
                 "caso": nome_caso,
+                "nos_perturbados": json.dumps(
+                    list(nomes_perturbados),
+                    ensure_ascii=False,
+                ),
                 "delta": delta,
                 "n_simulacoes": n_simulacoes,
                 "semente": semente,
                 "erro_real_medio": statistics.mean(erros_reais),
-                "erro_real_p50": quantil_nearest_rank(
-                    erros_reais, 0.50
-                ),
-                "erro_real_p90": quantil_nearest_rank(
-                    erros_reais, 0.90
-                ),
-                "erro_real_p99": quantil_nearest_rank(
-                    erros_reais, 0.99
-                ),
+                "erro_real_p50": quantil_nearest_rank(erros_reais, 0.50),
+                "erro_real_p90": quantil_nearest_rank(erros_reais, 0.90),
+                "erro_real_p99": quantil_nearest_rank(erros_reais, 0.99),
                 "erro_real_maximo": max(erros_reais),
                 "erro_linear_medio": statistics.mean(erros_lineares),
                 "diferenca_magnitude_media_real_linear": (
                     statistics.mean(diferencas_magnitude)
                 ),
+                "residuo_assinado_medio": statistics.mean(residuos_assinados),
                 "cobertura_soma_modulos_percentual": (
                     100.0 * sum(coberturas) / len(coberturas)
                 ),
@@ -177,11 +201,7 @@ def salvar_csv(linhas, caminho):
     caminho = Path(caminho)
     caminho.parent.mkdir(parents=True, exist_ok=True)
 
-    with caminho.open(
-        "w",
-        newline="",
-        encoding="utf-8-sig",
-    ) as arquivo:
+    with caminho.open("w", newline="", encoding="utf-8-sig") as arquivo:
         escritor = csv.DictWriter(
             arquivo,
             fieldnames=list(linhas[0].keys()),
@@ -201,7 +221,6 @@ def main():
         amostras,
         PASTA_SAIDA / "monte_carlo_amostras.csv",
     )
-
     arquivo_resumo = salvar_csv(
         resumos,
         PASTA_SAIDA / "monte_carlo_resumo.csv",
@@ -221,6 +240,7 @@ def main():
     for linha in resumos:
         print(
             f"{linha['caso']} | "
+            f"nos={linha['nos_perturbados']} | "
             f"delta={linha['delta']} | "
             f"media={linha['erro_real_medio']:.6g} | "
             f"P50={linha['erro_real_p50']:.6g} | "
